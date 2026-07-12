@@ -25,12 +25,12 @@ jobs:
     with:
       image-name: orders
       image-tag: ${{ github.ref_name }}
-      K3S-SERVER-PUBLIC-IP: ${{ vars.K3S_SERVER_PUBLIC_IP }}
+      k3s-server-public-ip: ${{ vars.K3S_SERVER_PUBLIC_IP }}
     secrets:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       EA2_SSH_PRIVATE_KEY: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
-      K3S-SERVER-PUBLIC-IP: ${{ vars.K3S_SERVER_PUBLIC_IP }}
+      k3s-server-public-ip: ${{ vars.K3S_SERVER_PUBLIC_IP }}
 ```
 
 El repo cliente debe incluir su propia carpeta `k8s/` con:
