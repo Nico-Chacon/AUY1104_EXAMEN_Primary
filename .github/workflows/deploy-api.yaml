@@ -74,7 +74,6 @@ on:
         default: ""
 
 jobs:
-
   deps-and-test:
     name: Dependencies and Tests
     runs-on: ubuntu-latest
@@ -106,17 +105,18 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
 
-    - uses: webfactory/ssh-agent@v0.9.0
-      with:
-        ssh-private-key: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
+      - name: Mostrar IP recibida
+        run: |
+          echo "IP='${{ inputs.k3s-server-public-ip }}'"
+          echo "Environment='${{ inputs.environment }}'"
+          echo "Namespace='${{ inputs.namespace }}'"
 
-    - name: Mostrar IP recibida
-      run: |
-        echo "IP='${{ inputs.k3s-server-public-ip }}'"
-
-    - name: Verificar conexión
-      run: ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "echo Conexion correcta"
+      - name: Verificar conexión
+        run: ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "echo Conexion correcta"
 
       - uses: actions/checkout@v4
 
@@ -153,7 +153,7 @@ jobs:
 
       - name: Validación de Salud
         run: |
-         RESULT=$(ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          RESULT=$(ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
           "sudo k3s kubectl run healthcheck-tmp-\$RANDOM --rm -i --restart=Never --image=curlimages/curl -n ${{ inputs.namespace }} -- curl -s -o /dev/null -w '%{http_code} %{time_total}' http://demo-api-green-preview:3000/health || echo '000 0'")
           echo "Resultado: $RESULT"
           CODE=$(echo "$RESULT" | tail -1 | awk '{print $1}')
@@ -174,3 +174,4 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
           "sudo k3s kubectl patch svc demo-api-service -n ${{ inputs.namespace }} -p '{\"spec\":{\"selector\":{\"app\":\"demo-api\",\"version\":\"blue\"}}}' ; sudo k3s kubectl rollout undo deployment/demo-api-green -n ${{ inputs.namespace }}"
+
