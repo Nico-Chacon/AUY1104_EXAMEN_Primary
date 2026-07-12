@@ -30,7 +30,7 @@ jobs:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       EA2_SSH_PRIVATE_KEY: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
-      k3s-server-public-ip: ${{ vars.K3S_SERVER_PUBLIC_IP }}
+      
 ```
 
 El repo cliente debe incluir su propia carpeta `k8s/` con:
