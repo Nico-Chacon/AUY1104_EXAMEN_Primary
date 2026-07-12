@@ -1,0 +1,172 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Plantilla reutilizable de CI/CD (EP1) - Blue-Green + Validación de Salud + Rollback
+#
+# Base tomada y adaptada (con autorización) del proyecto de una compañera de
+# curso, cuyo diseño de pipeline fue probado y validado con éxito en una
+# Prueba de Fuego real (ver README.md para el detalle de la atribución).
+#
+# Resumen del funcionamiento:
+#   - "blue" es la versión estable/base; "green" siempre recibe la versión
+#     candidata en cada despliegue.
+#   - Se valida la salud de green golpeando su Service interno
+#     (demo-api-green-preview) con un pod efímero de curl, ANTES de exponerlo
+#     a tráfico real.
+#   - Si la validación pasa, se mueve el selector del Service público a
+#     "green". Si falla (por cualquier motivo: imagen inexistente, timeout de
+#     rollout, error 500, latencia alta), se hace rollback automático:
+#     el Service público vuelve a "blue" y se ejecuta `rollout undo`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Subir la API a Docker Hub (receta reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+      k3s-server-public-ip:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      env_vars:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      DOCKER_USERNAME:
+        required: true
+      DOCKER_PASSWORD:
+        required: true
+      EA2_SSH_PRIVATE_KEY:
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      image-name:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+      k3s-server-public-ip:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+        default: production
+      namespace:
+        required: true
+        type: string
+        default: default
+      env_vars:
+        required: false
+        type: string
+        default: ""
+
+jobs:
+
+  deps-and-test:
+    name: Dependencies and Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install
+      - run: npm test
+
+  build-and-push:
+    name: Build and Push Docker
+    needs: deps-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - run: |
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ inputs.image-name }}
+          docker build -t $IMAGE:${{ inputs.image-tag }} -t $IMAGE:latest .
+      - run: |
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ inputs.image-name }}
+          docker push --all-tags $IMAGE
+
+  deploy-to-k8s:
+    name: Deploy to K3S (Blue-Green)
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
+
+      - name: Verificar conexión
+        run: ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "echo Conexion correcta"
+
+      - uses: actions/checkout@v4
+
+      - name: Copiar manifiestos
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "sudo rm -rf /tmp/k8s-deploy"
+          scp -o StrictHostKeyChecking=accept-new -r k8s ubuntu@${{ inputs.k3s-server-public-ip }}:/tmp/k8s-deploy
+
+      - name: Crear Namespace
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | sudo k3s kubectl apply -f -"
+
+      - name: Aplicar manifiestos base
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl apply -n ${{ inputs.namespace }} -f /tmp/k8s-deploy"
+
+      - name: Actualizar imagen solo en green
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl set image deployment/demo-api-green demo-api=${{ secrets.DOCKER_USERNAME }}/${{ inputs.image-name }}:${{ inputs.image-tag }} -n ${{ inputs.namespace }}"
+
+      - name: Inyectar variables de entorno en green
+        if: inputs.env_vars != ''
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl set env deployment/demo-api-green ${{ inputs.env_vars }} -n ${{ inputs.namespace }}"
+
+      - name: Esperar Rollout de green
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl rollout status deployment/demo-api-green -n ${{ inputs.namespace }} --timeout=120s"
+
+      - name: Validación de Salud
+        run: |
+         RESULT=$(ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl run healthcheck-tmp-\$RANDOM --rm -i --restart=Never --image=curlimages/curl -n ${{ inputs.namespace }} -- curl -s -o /dev/null -w '%{http_code} %{time_total}' http://demo-api-green-preview:3000/health || echo '000 0'")
+          echo "Resultado: $RESULT"
+          CODE=$(echo "$RESULT" | tail -1 | awk '{print $1}')
+          TIME=$(echo "$RESULT" | tail -1 | awk '{print $2}')
+          echo "Codigo: $CODE - Tiempo: $TIME"
+          if [ "$CODE" != "200" ]; then echo "FALLA: codigo HTTP $CODE"; exit 1; fi
+          if (( $(echo "$TIME > 2.0" | bc -l) )); then echo "FALLA: latencia alta ($TIME s)"; exit 1; fi
+          echo "Salud OK"
+
+      - name: Cambiar tráfico a green
+        if: success()
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl patch svc demo-api-service -n ${{ inputs.namespace }} -p '{\"spec\":{\"selector\":{\"app\":\"demo-api\",\"version\":\"green\"}}}'"
+
+      - name: Rollback automático
+        if: failure()
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} \
+          "sudo k3s kubectl patch svc demo-api-service -n ${{ inputs.namespace }} -p '{\"spec\":{\"selector\":{\"app\":\"demo-api\",\"version\":\"blue\"}}}' ; sudo k3s kubectl rollout undo deployment/demo-api-green -n ${{ inputs.namespace }}"
