@@ -107,15 +107,16 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
 
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
-          
-      - name: Mostrar IP recibida
-          run: |
-            echo "IP='${{ inputs.k3s-server-public-ip }}'"
-      - name: Verificar conexión
-        run: ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "echo Conexion correcta"
+    - uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.EA2_SSH_PRIVATE_KEY }}
+
+    - name: Mostrar IP recibida
+      run: |
+        echo "IP='${{ inputs.k3s-server-public-ip }}'"
+
+    - name: Verificar conexión
+      run: ssh -o StrictHostKeyChecking=accept-new ubuntu@${{ inputs.k3s-server-public-ip }} "echo Conexion correcta"
 
       - uses: actions/checkout@v4
 
